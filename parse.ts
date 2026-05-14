@@ -865,6 +865,8 @@ function countRetainedPathTokens(sourceText: string, summary: string): number {
 }
 
 const MAX_SUMMARY_SOURCE_CHARS = 16000;
+const MAX_LONG_THINKING_BLOCK_CHARS = 32000;
+const MAX_THINKING_STEPS_PER_MESSAGE = 64;
 
 function summarizeThinkingTextDetailed(text: string, fallback = "Reasoning is hidden by the provider."): {
 	summary: string;
@@ -1110,7 +1112,12 @@ export function iconForThinkingRole(role: ThinkingSemanticRole): string {
 export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThinkingStep[] {
 	const steps: DerivedThinkingStep[] = [];
 	blocks.forEach((block, blockIndex) => {
-		if (block.redacted && !block.text.trim()) {
+		if (steps.length >= MAX_THINKING_STEPS_PER_MESSAGE) {
+			return;
+		}
+
+		const blockText = normalizeNewlines(block.text).trim();
+		if (block.redacted && !blockText) {
 			const summary = "Reasoning is hidden by the provider.";
 			steps.push({
 				id: `${block.contentIndex}-0`,
@@ -1131,8 +1138,34 @@ export function deriveThinkingSteps(blocks: ThinkingSourceBlock[]): DerivedThink
 			return;
 		}
 
-		const stepTexts = splitThinkingIntoStepTexts(block.text);
+		if (!block.redacted && blockText.length > MAX_LONG_THINKING_BLOCK_CHARS) {
+			const truncatedForSummary = blockText.length > MAX_SUMMARY_SOURCE_CHARS
+				? blockText.slice(0, MAX_SUMMARY_SOURCE_CHARS)
+				: blockText;
+			const summaryDetails = summarizeThinkingTextDetailed(truncatedForSummary);
+			const role = inferThinkingRole(`${summaryDetails.summary}\n${truncatedForSummary}`);
+			steps.push({
+				id: `${block.contentIndex}-0`,
+				contentIndex: block.contentIndex,
+				blockIndex,
+				stepIndex: 0,
+				summary: summaryDetails.summary,
+				body: blockText,
+				role,
+				icon: iconForThinkingRole(role),
+				baselineSummary: summaryDetails.baselineSummary,
+				challengerSummary: summaryDetails.challengerSummary,
+				summaryEvents: summaryDetails.events,
+				collapsedPriority: summaryDetails.collapsedPriority,
+				hasExplicitFailure: summaryDetails.hasExplicitFailure,
+				hasExplicitSuccess: summaryDetails.hasExplicitSuccess,
+			});
+			return;
+		}
+
+		const stepTexts = splitThinkingIntoStepTexts(blockText);
 		stepTexts.forEach((stepText, stepIndex) => {
+			if (steps.length >= MAX_THINKING_STEPS_PER_MESSAGE) return;
 			const summaryDetails = summarizeThinkingTextDetailed(stepText);
 			const role = inferThinkingRole(`${summaryDetails.summary}\n${stepText}`);
 			steps.push({
