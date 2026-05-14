@@ -864,6 +864,8 @@ function countRetainedPathTokens(sourceText: string, summary: string): number {
 	return collectPathTokens(sourceText).filter((token) => summary.includes(token)).length;
 }
 
+const MAX_SUMMARY_SOURCE_CHARS = 16000;
+
 function summarizeThinkingTextDetailed(text: string, fallback = "Reasoning is hidden by the provider."): {
 	summary: string;
 	baselineSummary: string;
@@ -886,8 +888,12 @@ function summarizeThinkingTextDetailed(text: string, fallback = "Reasoning is hi
 		};
 	}
 
-	const baselineSummary = summarizeThinkingTextBaseline(raw, fallback);
-	const challenger = summarizeThinkingTextChallenger(raw, fallback);
+	const summarySource = raw.length > MAX_SUMMARY_SOURCE_CHARS
+		? `${raw.slice(0, Math.floor(MAX_SUMMARY_SOURCE_CHARS / 2))}\n\n…\n\n${raw.slice(-Math.floor(MAX_SUMMARY_SOURCE_CHARS / 2))}`
+		: raw;
+
+	const baselineSummary = summarizeThinkingTextBaseline(summarySource, fallback);
+	const challenger = summarizeThinkingTextChallenger(summarySource, fallback);
 	const challengerSummary = challenger.summary;
 
 	const preservesUncertainty = /\b(?:whether|maybe|might|looks like|seems|uncertain)\b/i.test(challengerSummary);
@@ -897,16 +903,16 @@ function summarizeThinkingTextDetailed(text: string, fallback = "Reasoning is hi
 	const laterExplicitSuccess = latestSuccessOrder > latestFailureOrder;
 	const baselineHasExplicitSuccess = hasExplicitSuccessCue(baselineSummary);
 	const baselineHasExplicitFailure = hasExplicitFailureCue(baselineSummary);
-	const baselineRetainedPathCount = countRetainedPathTokens(raw, baselineSummary);
-	const challengerRetainedPathCount = countRetainedPathTokens(raw, challengerSummary);
-	const sourceSymbols = Array.from(new Set(raw.match(SYMBOL_TOKEN_RE) ?? []));
+	const baselineRetainedPathCount = countRetainedPathTokens(summarySource, baselineSummary);
+	const challengerRetainedPathCount = countRetainedPathTokens(summarySource, challengerSummary);
+	const sourceSymbols = Array.from(new Set(summarySource.match(SYMBOL_TOKEN_RE) ?? []));
 	const baselineRetainedSymbolCount = sourceSymbols.filter((token) => baselineSummary.includes(token)).length;
 	const challengerRetainedSymbolCount = sourceSymbols.filter((token) => challengerSummary.includes(token)).length;
-	const startsWithStrongHypothesis = /^(?:maybe|perhaps)\b/i.test(raw) || /^whether\b/i.test(raw);
-	const startsWithExplicitIntent = /^(?:i\s+(?:should|will|want\s+to|plan\s+to))\b/i.test(raw);
+	const startsWithStrongHypothesis = /^(?:maybe|perhaps)\b/i.test(summarySource) || /^whether\b/i.test(summarySource);
+	const startsWithExplicitIntent = /^(?:i\s+(?:should|will|want\s+to|plan\s+to))\b/i.test(summarySource);
 	const challengerFramesPlan = /^Planning to\b/i.test(challengerSummary);
 	const baselineFramesPlan = /^Planning to\b/i.test(baselineSummary);
-	const rawRequiresDeferredJudgment = /\bbefore i call this a drift\b/i.test(raw);
+	const rawRequiresDeferredJudgment = /\bbefore i call this a drift\b/i.test(summarySource);
 	const challengerRetainsDeferredJudgment = /\bbefore calling this a drift\b/i.test(challengerSummary);
 	const baselineRetainsDeferredJudgment = /\bbefore (?:i call|calling) this a drift\b/i.test(baselineSummary);
 	const repeatedActionKeys = challenger.events
@@ -926,12 +932,12 @@ function summarizeThinkingTextDetailed(text: string, fallback = "Reasoning is hi
 	const shouldCompactFocusSummary = challenger.events.length === 1
 		&& challenger.events[0]?.type === "focus"
 		&& /^(?:Inspect|Next check is|Planning to compare .* before editing\.)\b/i.test(challengerSummary)
-		&& /^(?:before editing |before touching |before changing |i(?:'m| am)\s+(?:reading|inspecting|tracing)|the next check is)\b/i.test(raw)
-		&& !/\bdo not regress\b/i.test(raw)
+		&& /^(?:before editing |before touching |before changing |i(?:'m| am)\s+(?:reading|inspecting|tracing)|the next check is)\b/i.test(summarySource)
+		&& !/\bdo not regress\b/i.test(summarySource)
 		&& (challengerRetainedPathCount >= baselineRetainedPathCount || challengerRetainedSymbolCount > baselineRetainedSymbolCount);
-	const rawHasCompareBeforeEditingIntent = /\bcompare\b/i.test(raw)
-		&& /\bsummary mode\b/i.test(raw)
-		&& /\bbefore (?:editing|touching|changing)\b/i.test(raw);
+	const rawHasCompareBeforeEditingIntent = /\bcompare\b/i.test(summarySource)
+		&& /\bsummary mode\b/i.test(summarySource)
+		&& /\bbefore (?:editing|touching|changing)\b/i.test(summarySource);
 	const shouldPreferCompareBeforeEditingTemplate = challenger.events.length === 1
 		&& challenger.events[0]?.type === "focus"
 		&& rawHasCompareBeforeEditingIntent
@@ -947,30 +953,30 @@ function summarizeThinkingTextDetailed(text: string, fallback = "Reasoning is hi
 		&& challengerRetainedPathCount >= baselineRetainedPathCount;
 	const shouldPreferDecisionTemplate = singleChallengerEventType === "decision"
 		&& DECISION_CUE_RE.test(challengerSummary)
-		&& DECISION_CUE_RE.test(raw)
+		&& DECISION_CUE_RE.test(summarySource)
 		&& challengerRetainsComparableContext
 		&& challengerSummary.length <= baselineSummary.length + 8;
 	const shouldPreferSuccessTemplate = singleChallengerEventType === "success"
 		&& hasExplicitSuccessCue(challengerSummary)
 		&& challengerRetainsComparableContext
 		&& challengerSummary.length <= baselineSummary.length + 8;
-	const rawHasExpandedSelectionConstraint = /\bexpanded mode\b/i.test(raw)
-		&& /\b(?:collapsed|summary)\b/i.test(raw)
-		&& /\b(?:preserve|keep|limit)\b/i.test(raw);
+	const rawHasExpandedSelectionConstraint = /\bexpanded mode\b/i.test(summarySource)
+		&& /\b(?:collapsed|summary)\b/i.test(summarySource)
+		&& /\b(?:preserve|keep|limit)\b/i.test(summarySource);
 	const shouldPreferExpandedConstraintTemplate = singleChallengerEventType === "plan_change"
 		&& rawHasExpandedSelectionConstraint
 		&& /\bexpanded mode\b/i.test(challengerSummary)
 		&& /\b(?:collapsed|summary)\b/i.test(challengerSummary)
 		&& challengerRetainsComparableContext;
-	const rawHasHybridPlanFeatures = /\bbaseline\b/i.test(raw)
-		&& /\bchallenger\b/i.test(raw)
-		&& /\b(?:(?:clearly\s+)?better|wins?)\b/i.test(raw);
+	const rawHasHybridPlanFeatures = /\bbaseline\b/i.test(summarySource)
+		&& /\bchallenger\b/i.test(summarySource)
+		&& /\b(?:(?:clearly\s+)?better|wins?)\b/i.test(summarySource);
 	const challengerHasHybridPlanFeatures = /\bbaseline\b/i.test(challengerSummary)
 		&& /\bchallenger\b/i.test(challengerSummary)
 		&& /\b(?:better|wins?)\b/i.test(challengerSummary);
 	const shouldPreferPlanChangeTemplate = singleChallengerEventType === "plan_change"
 		&& (challengerHasHybridPlanFeatures || PLAN_CHANGE_CUE_RE.test(challengerSummary) || /^Changed plan:/i.test(challengerSummary))
-		&& (rawHasHybridPlanFeatures || PLAN_CHANGE_CUE_RE.test(raw))
+		&& (rawHasHybridPlanFeatures || PLAN_CHANGE_CUE_RE.test(summarySource))
 		&& challengerRetainsComparableContext;
 
 	let summary = baselineSummary;
@@ -978,7 +984,7 @@ function summarizeThinkingTextDetailed(text: string, fallback = "Reasoning is hi
 		summary = challengerSummary;
 	} else if (challenger.hasExplicitFailure && !laterExplicitSuccess && !baselineHasExplicitFailure && hasExplicitFailureCue(challengerSummary)) {
 		summary = challengerSummary;
-	} else if (startsWithStrongHypothesis && (UNCERTAINTY_CUE_RE.test(raw) || SPECULATIVE_CUE_RE.test(raw)) && preservesUncertainty && !baselinePreservesUncertainty) {
+	} else if (startsWithStrongHypothesis && (UNCERTAINTY_CUE_RE.test(summarySource) || SPECULATIVE_CUE_RE.test(summarySource)) && preservesUncertainty && !baselinePreservesUncertainty) {
 		summary = challengerSummary;
 	} else if (rawRequiresDeferredJudgment && challengerRetainsDeferredJudgment && !baselineRetainsDeferredJudgment) {
 		summary = challengerSummary;
