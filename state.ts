@@ -21,6 +21,8 @@ interface ThinkingStepsGlobalState {
 	messageScopeByObject: WeakMap<object, string>;
 	messageObjectsByScope: Record<string, Set<object>>;
 	messageScopeByTimestamp: Record<string, string>;
+	messageVersionByObject: WeakMap<object, number>;
+	cachedThinkingStepsByObject: WeakMap<object, { version: number; steps: import("./types.js").DerivedThinkingStep[] }>;
 	patchReleases: PatchRelease[];
 	patchReleasesByScope: Record<string, PatchRelease[]>;
 	patchRefCount: number;
@@ -123,6 +125,10 @@ function ensureGlobalStateShape(state: ThinkingStepsGlobalState & LegacyThinking
 	const messageScopeByTimestamp: Record<string, string> = isRecord(state.messageScopeByTimestamp)
 		? Object.fromEntries(Object.entries(state.messageScopeByTimestamp).filter((entry): entry is [string, string] => typeof entry[1] === "string").map(([messageTimestamp, scopeKey]) => [messageTimestamp, normalizeThinkingScopeKey(scopeKey)]))
 		: {};
+	const messageVersionByObject = state.messageVersionByObject instanceof WeakMap ? state.messageVersionByObject as WeakMap<object, number> : new WeakMap<object, number>();
+	const cachedThinkingStepsByObject = state.cachedThinkingStepsByObject instanceof WeakMap
+		? state.cachedThinkingStepsByObject as WeakMap<object, { version: number; steps: import("./types.js").DerivedThinkingStep[] }>
+		: new WeakMap<object, { version: number; steps: import("./types.js").DerivedThinkingStep[] }>();
 	const legacyPatchReleasesByScope: Record<string, PatchRelease[]> = isRecord(state.patchReleasesByScope)
 		? Object.fromEntries(Object.entries(state.patchReleasesByScope).map(([scopeKey, releases]) => [normalizeThinkingScopeKey(scopeKey), Array.isArray(releases) ? releases as PatchRelease[] : []]))
 		: {};
@@ -156,6 +162,8 @@ function ensureGlobalStateShape(state: ThinkingStepsGlobalState & LegacyThinking
 	state.messageScopeByObject = messageScopeByObject;
 	state.messageObjectsByScope = messageObjectsByScope;
 	state.messageScopeByTimestamp = messageScopeByTimestamp;
+	state.messageVersionByObject = messageVersionByObject;
+	state.cachedThinkingStepsByObject = cachedThinkingStepsByObject;
 	state.patchReleases = patchReleases;
 	state.patchReleasesByScope = patchReleasesByScope;
 	state.patchRefCount = typeof state.patchRefCount === "number" && Number.isFinite(state.patchRefCount)
@@ -180,6 +188,8 @@ const globalState = (() => {
 		messageScopeByObject: new WeakMap<object, string>(),
 		messageObjectsByScope: { [DEFAULT_SCOPE_KEY]: new Set<object>() },
 		messageScopeByTimestamp: {},
+		messageVersionByObject: new WeakMap<object, number>(),
+		cachedThinkingStepsByObject: new WeakMap<object, { version: number; steps: import("./types.js").DerivedThinkingStep[] }>(),
 		patchReleases: [],
 		patchReleasesByScope: {},
 		patchRefCount: 0,
@@ -207,6 +217,26 @@ function ensureScopeState(scopeKey: string): void {
 	if (!(scopeKey in globalState.patchReleasesByScope)) {
 		globalState.patchReleasesByScope[scopeKey] = [];
 	}
+}
+
+export function getThinkingMessageVersion(message: object): number {
+	return globalState.messageVersionByObject.get(message) ?? 0;
+}
+
+export function bumpThinkingMessageVersion(message: object): number {
+	const nextVersion = getThinkingMessageVersion(message) + 1;
+	globalState.messageVersionByObject.set(message, nextVersion);
+	return nextVersion;
+}
+
+export function getCachedThinkingSteps(message: object, version: number): import("./types.js").DerivedThinkingStep[] | undefined {
+	const entry = globalState.cachedThinkingStepsByObject.get(message);
+	if (!entry || entry.version !== version) return undefined;
+	return entry.steps;
+}
+
+export function setCachedThinkingSteps(message: object, version: number, steps: import("./types.js").DerivedThinkingStep[]): void {
+	globalState.cachedThinkingStepsByObject.set(message, { version, steps });
 }
 
 export function getCurrentThinkingScopeKey(): string {
@@ -371,6 +401,8 @@ export function clearThinkingMessageOwnership(scopeKey?: string): void {
 	globalState.messageScopeByObject = new WeakMap<object, string>();
 	globalState.messageObjectsByScope = { [DEFAULT_SCOPE_KEY]: new Set<object>() };
 	globalState.messageScopeByTimestamp = {};
+	globalState.messageVersionByObject = new WeakMap<object, number>();
+	globalState.cachedThinkingStepsByObject = new WeakMap<object, { version: number; steps: import("./types.js").DerivedThinkingStep[] }>();
 }
 
 export function resetThinkingStepsViewState(scopeKey?: string): void {

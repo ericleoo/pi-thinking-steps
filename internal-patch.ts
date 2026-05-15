@@ -2,7 +2,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AssistantMessage, ThinkingContent } from "@mariozechner/pi-ai";
 import { Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { deriveThinkingSteps } from "./parse.js";
 import { decrementPatchRefCount, getPatchCleanup, getPatchInstallPromise, incrementPatchRefCount, resolveThinkingMessageScope, setPatchCleanup, setPatchInstallPromise } from "./state.js";
+import { getCachedThinkingSteps, getThinkingMessageVersion, setCachedThinkingSteps } from "./state.js";
 import { ThinkingStepsComponent } from "./render.js";
 import type { ThinkingSourceBlock, ThinkingThemeLike } from "./types.js";
 
@@ -144,6 +146,15 @@ function hasVisibleTextContent(message: AssistantMessage): boolean {
 
 function hasVisibleThinkingContent(message: AssistantMessage): boolean {
 	return message.content.some((content) => content.type === "thinking" && hasVisibleThinking(content));
+}
+
+function deriveCachedThinkingSteps(message: AssistantMessage, thinkingBlocks: ThinkingSourceBlock[]): import("./types.js").DerivedThinkingStep[] {
+	const version = getThinkingMessageVersion(message);
+	const cachedSteps = getCachedThinkingSteps(message, version);
+	if (cachedSteps) return cachedSteps;
+	const steps = deriveThinkingSteps(thinkingBlocks);
+	setCachedThinkingSteps(message, version, steps);
+	return steps;
 }
 
 async function installPatch(): Promise<() => void> {
@@ -310,7 +321,8 @@ async function installPatch(): Promise<() => void> {
 				}
 
 				if (content.type === "thinking" && thinkingBlocks.length > 0 && !renderedThinking) {
-					this.contentContainer.addChild(new ThinkingStepsComponent(theme, message.timestamp, thinkingBlocks, resolveThinkingMessageScope(message)));
+					const steps = deriveCachedThinkingSteps(message, thinkingBlocks);
+					this.contentContainer.addChild(new ThinkingStepsComponent(theme, message.timestamp, thinkingBlocks, resolveThinkingMessageScope(message), steps));
 					renderedThinking = true;
 					if (hasVisibleTextAfterThinking) {
 						this.contentContainer.addChild(new Spacer(1));

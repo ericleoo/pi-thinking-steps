@@ -20,6 +20,7 @@ import {
 	getPatchInstallPromise,
 	getPatchRefCount,
 	getThinkingStepsMode,
+	bumpThinkingMessageVersion,
 	resetThinkingStepsViewState,
 	setActiveThinkingState,
 	setCurrentThinkingScopeKey,
@@ -1595,6 +1596,54 @@ describe("integration patch edge cases", () => {
 			const lines = component.render(100).map(stripAnsi).join("\n");
 			assert.ok(lines.includes("Verify the refresh path after mode changes."));
 			assert.ok(!lines.includes("Inspect the current renderer implementation."));
+		} finally {
+			clearActiveThinkingState();
+			setThinkingStepsMode("summary");
+			await release();
+		}
+	});
+
+	it("reuses cached long-thinking steps across versioned updates and trims expanded bodies", async () => {
+		setThinkingStepsMode("summary");
+		clearActiveThinkingState();
+
+		const makeThinking = (label: string) => `Inspect ${label}.ts before editing.\n\n${"Collect evidence and compare notes. ".repeat(600)}`;
+		const message = {
+			role: "assistant",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			timestamp: 206,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			content: [{ type: "thinking", thinking: makeThinking("alpha") }],
+		};
+
+		const { component, release } = await createPatchedComponent(message);
+		try {
+			const firstSummary = stripAnsi(component.render(100).join("\n"));
+			assert.match(firstSummary, /alpha\.ts/i);
+
+			message.content[0]!.thinking = makeThinking("beta");
+			bumpThinkingMessageVersion(message as object);
+			(component as { updateContent(message: unknown): void }).updateContent(message);
+
+			const updatedSummary = stripAnsi(component.render(100).join("\n"));
+			assert.match(updatedSummary, /beta\.ts/i);
+			assert.doesNotMatch(updatedSummary, /alpha\.ts/i);
+
+			setThinkingStepsMode("expanded");
+			const expanded = stripAnsi(component.render(100).join("\n"));
+			assert.match(expanded, /Thinking Steps · Expanded/);
+			assert.match(expanded, /beta\.ts/i);
+			assert.match(expanded, /…/);
 		} finally {
 			clearActiveThinkingState();
 			setThinkingStepsMode("summary");

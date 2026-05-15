@@ -4,7 +4,7 @@ import { Key } from "@mariozechner/pi-tui";
 import { retainThinkingStepsPatch } from "./internal-patch.js";
 import { clearThinkingStepsModePreference, readThinkingStepsModePreference, writeThinkingStepsModePreference } from "./persistence.js";
 import { parseThinkingMode } from "./parse.js";
-import { clearActiveThinkingState, clearThinkingMessageOwnership, getCurrentThinkingScopeKey, getThinkingStepsMode, nextThinkingRefreshLabel, recordThinkingMessageScope, registerThinkingPatchRelease, resolveThinkingMessageScope, setActiveThinkingState, setCurrentThinkingScopeKey, setThinkingStepsMode, takeThinkingPatchRelease } from "./state.js";
+import { bumpThinkingMessageVersion, clearActiveThinkingState, clearThinkingMessageOwnership, getCurrentThinkingScopeKey, getThinkingStepsMode, nextThinkingRefreshLabel, recordThinkingMessageScope, registerThinkingPatchRelease, resolveThinkingMessageScope, setActiveThinkingState, setCurrentThinkingScopeKey, setThinkingStepsMode, takeThinkingPatchRelease } from "./state.js";
 import type { PersistedThinkingStepsPreferenceScope, ThinkingStepsMode } from "./types.js";
 
 type ThinkingStepsCommandScope = "session" | PersistedThinkingStepsPreferenceScope;
@@ -302,6 +302,7 @@ export default function thinkingStepsExtension(pi: ExtensionAPI): void {
 	pi.on("message_start", async (event) => {
 		if (event.message.role === "assistant") {
 			recordThinkingMessageScope(event.message, sessionScopeKey);
+			bumpThinkingMessageVersion(event.message);
 			const ownerScopeKey = resolveThinkingMessageScope(event.message, sessionScopeKey);
 			const timestamp = typeof (event.message as { timestamp?: unknown }).timestamp === "number"
 				? (event.message as { timestamp: number }).timestamp
@@ -313,6 +314,7 @@ export default function thinkingStepsExtension(pi: ExtensionAPI): void {
 	pi.on("message_update", async (event) => {
 		if (event.message.role !== "assistant") return;
 		recordThinkingMessageScope(event.message, sessionScopeKey);
+		bumpThinkingMessageVersion(event.message);
 		const ownerScopeKey = resolveThinkingMessageScope(event.message, sessionScopeKey);
 		const assistantEvent = event.assistantMessageEvent;
 		if (assistantEvent.type === "thinking_start" || assistantEvent.type === "thinking_delta") {

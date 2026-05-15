@@ -341,6 +341,16 @@ function renderWrappedRawText(theme: ThinkingThemeLike, text: string, width: num
 	return rendered;
 }
 
+const MAX_EXPANDED_BODY_CHARS = 8192;
+
+function trimExpandedBody(text: string): string {
+	const normalized = text.trim();
+	if (normalized.length <= MAX_EXPANDED_BODY_CHARS) return normalized;
+	const headChars = Math.floor(MAX_EXPANDED_BODY_CHARS * 0.6);
+	const tailChars = Math.max(0, MAX_EXPANDED_BODY_CHARS - headChars);
+	return `${normalized.slice(0, headChars)}\n…\n${normalized.slice(-tailChars)}`;
+}
+
 function renderExpanded(theme: ThinkingThemeLike, width: number, steps: DerivedThinkingStep[], activeStepId?: string): string[] {
 	const lines = [
 		truncateToWidth(`${theme.fg("muted", "┆")} ${theme.fg("dim", "Thinking Steps · Expanded")}`, width),
@@ -352,7 +362,7 @@ function renderExpanded(theme: ThinkingThemeLike, width: number, steps: DerivedT
 		const isActive = step.id === activeStepId;
 		lines.push(...wrapStepHeader(theme, width, step, isActive, connector));
 
-		const normalizedBody = step.body.trim();
+		const normalizedBody = trimExpandedBody(step.body);
 		if (!normalizedBody) continue;
 
 		const bodyPrefix = index === steps.length - 1 ? "   " : `${theme.fg("muted", "│")}  `;
@@ -384,8 +394,9 @@ export class ThinkingStepsComponent implements Component {
 		private readonly messageTimestamp: number,
 		blocks: ThinkingSourceBlock[],
 		scopeKey?: string,
+		precomputedSteps?: DerivedThinkingStep[],
 	) {
-		this.steps = deriveThinkingSteps(blocks);
+		this.steps = precomputedSteps ?? deriveThinkingSteps(blocks);
 		this.scopeKey = scopeKey ?? getCurrentThinkingScopeKey();
 	}
 
