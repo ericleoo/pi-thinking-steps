@@ -1650,6 +1650,51 @@ describe("integration patch edge cases", () => {
 			await release();
 		}
 	});
+
+	it("throttles long live thinking renders on Termux before rebuilding", async () => {
+		const previousTermuxVersion = process.env.TERMUX_VERSION;
+		process.env.TERMUX_VERSION = "1";
+		setThinkingStepsMode("summary");
+		clearActiveThinkingState();
+
+		const message = {
+			role: "assistant",
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			timestamp: 207,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			content: [{ type: "thinking", thinking: "Inspect alpha. " + "Collect evidence and compare notes. ".repeat(80) }],
+		} as const;
+
+		const { component, release } = await createPatchedComponent(message);
+		try {
+			const immediate = stripAnsi(component.render(100).join("\n"));
+			assert.doesNotMatch(immediate, /Thinking Steps · Summary/);
+
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			const delayed = stripAnsi(component.render(100).join("\n"));
+			assert.match(delayed, /Thinking/);
+			assert.match(delayed, /Inspect alpha|Collect evidence/i);
+			assert.doesNotMatch(delayed, /Thinking Steps · Expanded/);
+		} finally {
+			clearActiveThinkingState();
+			setThinkingStepsMode("summary");
+			await release();
+			if (previousTermuxVersion === undefined) {
+				delete process.env.TERMUX_VERSION;
+			} else {
+				process.env.TERMUX_VERSION = previousTermuxVersion;
+			}
+		}
+	});
 });
 
 

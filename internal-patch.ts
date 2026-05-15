@@ -148,6 +148,14 @@ function hasVisibleThinkingContent(message: AssistantMessage): boolean {
 	return message.content.some((content) => content.type === "thinking" && hasVisibleThinking(content));
 }
 
+function isTermuxRuntime(): boolean {
+	return Boolean(
+		process.env.TERMUX_VERSION
+		|| process.env.TERMUX_APP_PID
+		|| process.env.PREFIX?.includes("com.termux"),
+	);
+}
+
 function deriveCachedThinkingSteps(message: AssistantMessage, thinkingBlocks: ThinkingSourceBlock[]): import("./types.js").DerivedThinkingStep[] {
 	const version = getThinkingMessageVersion(message);
 	const cachedSteps = getCachedThinkingSteps(message, version);
@@ -173,6 +181,10 @@ async function installPatch(): Promise<() => void> {
 	const originalUpdateContent = prototype.updateContent;
 	const originalSetHideThinkingBlock = prototype.setHideThinkingBlock;
 	const originalSetHiddenThinkingLabel = prototype.setHiddenThinkingLabel;
+	const liveThinkingRenderThrottleMs = isTermuxRuntime() ? 200 : 120;
+	const liveThinkingRenderBudgetChars = isTermuxRuntime() ? 1024 : 8192;
+	type PendingThinkingRender = { timer?: ReturnType<typeof setTimeout>; latestMessage?: AssistantMessage };
+	const pendingThinkingRenders = new WeakMap<AssistantMessageComponentPrototype, PendingThinkingRender>();
 
 	const normalizeHiddenThinkingLabel = (label: string): string => label.replace(/\u2060+$/gu, "");
 
@@ -228,6 +240,99 @@ async function installPatch(): Promise<() => void> {
 	};
 
 	const fallbackErrorMessage = "Thinking Steps patch failed: Pi internals are incompatible and fallback rendering also failed.";
+
+	const getPendingThinkingRender = (instance: AssistantMessageComponentPrototype): PendingThinkingRender => {
+		const pending = pendingThinkingRenders.get(instance);
+		if (pending) return pending;
+		const created: PendingThinkingRender = {};
+		pendingThinkingRenders.set(instance, created);
+		return created;
+	};
+
+	const clearPendingThinkingRender = (instance: AssistantMessageComponentPrototype): void => {
+		const pending = pendingThinkingRenders.get(instance);
+		if (!pending) return;
+		if (pending.timer) {
+			clearTimeout(pending.timer);
+			pending.timer = undefined;
+		}
+	};
+
+	const shouldThrottleThinkingRender = (message: AssistantMessage, thinkingBlocks: ThinkingSourceBlock[]): boolean => {
+		if (message.stopReason) return false;
+		if (thinkingBlocks.length === 0) return false;
+		const totalThinkingChars = thinkingBlocks.reduce((total, block) => total + block.text.length, 0);
+		return isTermuxRuntime()
+			? totalThinkingChars >= liveThinkingRenderBudgetChars
+			: totalThinkingChars >= liveThinkingRenderBudgetChars;
+	};
+
+	const renderThinkingContent = (instance: AssistantMessageComponentPrototype, message: AssistantMessage): void => {
+		clearPendingThinkingRender(instance);
+
+		try {
+			instance.contentContainer.clear();
+
+			const thinkingBlocks = collectThinkingBlocks(message);
+			const hasVisibleContent = hasVisibleTextContent(message) || thinkingBlocks.length > 0;
+			if (hasVisibleContent) {
+				instance.contentContainer.addChild(new Spacer(1));
+			}
+
+			let renderedThinking = false;
+			const hasVisibleTextAfterThinking = (() => {
+				const firstThinkingIndex = thinkingBlocks[0]?.contentIndex;
+				if (firstThinkingIndex === undefined) return false;
+				return message.content.slice(firstThinkingIndex + 1).some((content) => content.type === "text" && content.text.trim().length > 0);
+			})();
+
+			for (const content of message.content) {
+				if (content.type === "text" && content.text.trim()) {
+					instance.contentContainer.addChild(new Markdown(content.text.trim(), 1, 0, instance.markdownTheme as any));
+					continue;
+				}
+
+				if (content.type === "thinking" && thinkingBlocks.length > 0 && !renderedThinking) {
+					const steps = deriveCachedThinkingSteps(message, thinkingBlocks);
+					instance.contentContainer.addChild(new ThinkingStepsComponent(theme, message.timestamp, thinkingBlocks, resolveThinkingMessageScope(message), steps));
+					renderedThinking = true;
+					if (hasVisibleTextAfterThinking) {
+						instance.contentContainer.addChild(new Spacer(1));
+					}
+				}
+			}
+
+			const hasToolCalls = message.content.some((content) => content.type === "toolCall");
+			if (!hasToolCalls) {
+				if (message.stopReason === "aborted") {
+					const abortMessage =
+						message.errorMessage && message.errorMessage !== "Request was aborted"
+							? message.errorMessage
+							: "Operation aborted";
+					instance.contentContainer.addChild(new Spacer(1));
+					instance.contentContainer.addChild(new Text(theme.fg("error", abortMessage), 1, 0));
+				} else if (message.stopReason === "error") {
+					const errorMessage = message.errorMessage || "Unknown error";
+					instance.contentContainer.addChild(new Spacer(1));
+					instance.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMessage}`), 1, 0));
+				}
+			}
+		} catch (error) {
+			fallbackToOriginalUpdateContent(instance, message, "updateContent", error);
+		}
+	};
+
+	const scheduleThinkingRender = (instance: AssistantMessageComponentPrototype, message: AssistantMessage): void => {
+		const pending = getPendingThinkingRender(instance);
+		pending.latestMessage = message;
+		if (pending.timer) return;
+		pending.timer = setTimeout(() => {
+			pending.timer = undefined;
+			const nextMessage = pending.latestMessage ?? instance.lastMessage;
+			if (!nextMessage) return;
+			renderThinkingContent(instance, nextMessage);
+		}, liveThinkingRenderThrottleMs);
+	};
 
 	const fallbackToOriginalUpdateContent = (
 		instance: AssistantMessageComponentPrototype,
@@ -298,56 +403,15 @@ async function installPatch(): Promise<() => void> {
 			return;
 		}
 
-		try {
-			this.contentContainer.clear();
-
-			const thinkingBlocks = collectThinkingBlocks(message);
-			const hasVisibleContent = hasVisibleTextContent(message) || thinkingBlocks.length > 0;
-			if (hasVisibleContent) {
-				this.contentContainer.addChild(new Spacer(1));
+		const thinkingBlocks = collectThinkingBlocks(message);
+		if (shouldThrottleThinkingRender(message, thinkingBlocks)) {
+			scheduleThinkingRender(this, message);
+			if (isTermuxRuntime() || this.cachedLines) {
+				return;
 			}
-
-			let renderedThinking = false;
-			const hasVisibleTextAfterThinking = (() => {
-				const firstThinkingIndex = thinkingBlocks[0]?.contentIndex;
-				if (firstThinkingIndex === undefined) return false;
-				return message.content.slice(firstThinkingIndex + 1).some((content) => content.type === "text" && content.text.trim().length > 0);
-			})();
-
-			for (const content of message.content) {
-				if (content.type === "text" && content.text.trim()) {
-					this.contentContainer.addChild(new Markdown(content.text.trim(), 1, 0, this.markdownTheme as any));
-					continue;
-				}
-
-				if (content.type === "thinking" && thinkingBlocks.length > 0 && !renderedThinking) {
-					const steps = deriveCachedThinkingSteps(message, thinkingBlocks);
-					this.contentContainer.addChild(new ThinkingStepsComponent(theme, message.timestamp, thinkingBlocks, resolveThinkingMessageScope(message), steps));
-					renderedThinking = true;
-					if (hasVisibleTextAfterThinking) {
-						this.contentContainer.addChild(new Spacer(1));
-					}
-				}
-			}
-
-			const hasToolCalls = message.content.some((content) => content.type === "toolCall");
-			if (!hasToolCalls) {
-				if (message.stopReason === "aborted") {
-					const abortMessage =
-						message.errorMessage && message.errorMessage !== "Request was aborted"
-							? message.errorMessage
-							: "Operation aborted";
-					this.contentContainer.addChild(new Spacer(1));
-					this.contentContainer.addChild(new Text(theme.fg("error", abortMessage), 1, 0));
-				} else if (message.stopReason === "error") {
-					const errorMessage = message.errorMessage || "Unknown error";
-					this.contentContainer.addChild(new Spacer(1));
-					this.contentContainer.addChild(new Text(theme.fg("error", `Error: ${errorMessage}`), 1, 0));
-				}
-			}
-		} catch (error) {
-			fallbackToOriginalUpdateContent(this, message, "updateContent", error);
 		}
+
+		renderThinkingContent(this, message);
 	};
 
 	const patchedSetHideThinkingBlock = function patchedSetHideThinkingBlock(this: AssistantMessageComponentPrototype, hide: boolean): void {

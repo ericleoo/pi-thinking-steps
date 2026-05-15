@@ -341,6 +341,22 @@ function renderWrappedRawText(theme: ThinkingThemeLike, text: string, width: num
 	return rendered;
 }
 
+function isTermuxRuntime(): boolean {
+	return Boolean(
+		process.env.TERMUX_VERSION
+		|| process.env.TERMUX_APP_PID
+		|| process.env.PREFIX?.includes("com.termux"),
+	);
+}
+
+const TERMUX_LIVE_COLLAPSE_BODY_CHARS = 8192;
+
+function shouldForceCollapsedLiveRender(mode: RenderOptions["mode"], steps: DerivedThinkingStep[], isActive: boolean): boolean {
+	if (!isActive || mode === "collapsed" || !isTermuxRuntime()) return false;
+	const totalBodyChars = steps.reduce((total, step) => total + step.body.length, 0);
+	return totalBodyChars >= TERMUX_LIVE_COLLAPSE_BODY_CHARS;
+}
+
 const MAX_EXPANDED_BODY_CHARS = 8192;
 
 function trimExpandedBody(text: string): string {
@@ -374,10 +390,11 @@ function renderExpanded(theme: ThinkingThemeLike, width: number, steps: DerivedT
 
 export function renderThinkingStepsLines(theme: ThinkingThemeLike, width: number, options: RenderOptions): string[] {
 	if (options.steps.length === 0) return [];
-	if (options.mode === "collapsed") {
+	const effectiveMode = shouldForceCollapsedLiveRender(options.mode, options.steps, options.isActive) ? "collapsed" : options.mode;
+	if (effectiveMode === "collapsed") {
 		return renderCollapsed(theme, width, options.steps, options.activeStepId, options.isActive, options.nowMs);
 	}
-	if (options.mode === "expanded") {
+	if (effectiveMode === "expanded") {
 		return renderExpanded(theme, width, options.steps, options.activeStepId);
 	}
 	return renderSummary(theme, width, options.steps, options.activeStepId);
